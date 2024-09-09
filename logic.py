@@ -1,6 +1,13 @@
 from tgllm import LLM, Bot
 from database import Db
-from config import SYSTEM_PROMPT, JSON_PARAMETERS, TIME_BETWEEN_REQUESTS, MODEL_NAME
+from config import (
+    SYSTEM_PROMPT, 
+    JSON_PARAMETERS, 
+    TIME_BETWEEN_REQUESTS,
+    MODEL_NAME,
+    GROUPCHAT_MAXTOKEN,
+    USERCHAT_MAXTOKEN
+)
 
 import asyncio
 from datetime import datetime
@@ -17,7 +24,7 @@ def update_analyze(update: dict) -> dict:
         message = {
             "message_id": update["message"]["message_id"],
             "chat_id": update["message"]["chat"]["id"],
-            "role": "assistant" if update["message"]["from"]["is_bot"] else "user",
+            "role": "assistant" if update["message"]["from"]["is_bot"] and username != "GroupAnonymousBot" else "user",
             "content": update["message"]["text"],
             "username": username,
         }
@@ -34,16 +41,8 @@ async def request_wait():
         seconds = (datetime.now() - LAST_REQUEST_TIME).total_seconds()
     LAST_REQUEST_TIME = datetime.now()
 
-
-async def message_logic(update):
+async def message_handler(update):
     message = update_analyze(update)
-    if not message:
-        return
-    bot_message = {}
-
-    text_inmessage = "*Абоба думает...*"
-    text_overall = ""
-    text_troetochie = "..."
 
     if not message:
         return
@@ -52,7 +51,20 @@ async def message_logic(update):
         return
     await Db().new_message(message["chat_id"], message["role"], message["content"], username=message["username"])
 
+    print(message)
+
+    if message["role"] == "user":
+        await message_logic(message)
+
+async def message_logic(message):
+    bot_message = {}
+
+    text_inmessage = "*Абоба думает...*"
+    text_overall = ""
+    text_troetochie = "..."
+
     async def send_message():
+        await request_wait()
 
         try:
             bot_message = await Bot().post("/sendMessage",{
@@ -76,6 +88,8 @@ async def message_logic(update):
             return {}
     
     async def update_message():
+        await request_wait()
+        
         try:
             await Bot().post("/editMessageText", {
                 "chat_id": bot_message["result"]["chat"]["id"],
@@ -90,57 +104,55 @@ async def message_logic(update):
         except Exception as e:
             print(e)
 
-    if message["role"] == "user":
-        messages = await Db().get_messages(message["chat_id"])
-        messages = [{
-            "role": "system",
-            "content": SYSTEM_PROMPT
-            }
-        ] + messages
+    messages = await Db().get_messages(message["chat_id"])
+    messages = [{
+        "role": "system",
+        "content": SYSTEM_PROMPT
+        }
+    ] + messages
+    
+    bot_message = await send_message()
 
-        
-        await request_wait()
-        bot_message = await send_message()
+    json_data = JSON_PARAMETERS
+    json_data["messages"] = messages
 
-        json_data = JSON_PARAMETERS
-        json_data["messages"] = messages
+    if message["chat_id"] < 0:
+        json_data["max_tokens"] = GROUPCHAT_MAXTOKEN
+    else:
+        json_data["max_tokens"] = USERCHAT_MAXTOKEN
+    
+    print(json_data["max_tokens"])
 
-        if message["chat_id"] < 0:
-            json_data["max_tokens"] = 128
-
-        text_inmessage = ""
+    text_inmessage = ""
 
 
-        async for chunk in LLM().get_response(json_data):
+    async for chunk in LLM().get_response(json_data):
 
-            text_overall += chunk
-            text_inmessage += chunk
-            if (datetime.now() - LAST_REQUEST_TIME).total_seconds() >= TIME_BETWEEN_REQUESTS:
+        text_overall += chunk
+        text_inmessage += chunk
+        if (datetime.now() - LAST_REQUEST_TIME).total_seconds() >= TIME_BETWEEN_REQUESTS:
 
-                slice_index = 4096 - len(text_troetochie)
+            slice_index = 4096 - len(text_troetochie)
 
-                if len(text_inmessage) > slice_index:
-                    text_inmessage = chunk
+            if len(text_inmessage) > slice_index:
+                text_inmessage = chunk
+                temp = text_inmessage[slice_index:]
+                text_inmessage = text_inmessage[:slice_index]
+
+                while text_inmessage:
+                    bot_message = await send_message()
+
+                    if not temp:
+                        break
+
+                    text_inmessage = temp
                     temp = text_inmessage[slice_index:]
                     text_inmessage = text_inmessage[:slice_index]
+            
+            else:
+                await update_message()
+    
+    text_troetochie = ""
+    await update_message()
 
-                    while text_inmessage:
-                        await request_wait()
-                        bot_message = await send_message()
-
-                        if not temp:
-                            break
-
-                        text_inmessage = temp
-                        temp = text_inmessage[slice_index:]
-                        text_inmessage = text_inmessage[:slice_index]
-                
-                else:
-                    await request_wait()
-                    await update_message()
-        
-        text_troetochie = ""
-        await request_wait()
-        await update_message()
-
-        await Db().new_message(message["chat_id"], "assistant", text_overall, username=MODEL_NAME)
+    await Db().new_message(message["chat_id"], "assistant", text_overall, username=MODEL_NAME)

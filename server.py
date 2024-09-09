@@ -3,7 +3,7 @@ from config import TELEGRAM_BOT_TOKEN, NGROK_TUNNEL_URL
 from database import Db
 from tgllm import Bot
 from datetime import datetime
-from logic import message_logic
+from logic import message_handler
 import asyncio
 
 
@@ -26,4 +26,4 @@ async def on_startup():
 
 @app.post(WEBHOOK_PATH)
 async def bot_webhook(update: dict):
-    task = asyncio.create_task(message_logic(update))
+    task = asyncio.create_task(message_handler(update))
